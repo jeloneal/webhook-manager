@@ -1,0 +1,31 @@
+# Alternative: Docker Compose ohne Traefik (mit direktem Port-Mapping)
+
+version: '3.8'
+
+services:
+  webhook-manager:
+    build: .
+    container_name: webhook-manager
+    restart: unless-stopped
+    
+    environment:
+      # WICHTIG: Passwort ändern!
+      - WEBHOOK_PASSWORD=admin123
+      - SECRET_KEY=your-secret-key-change-me
+      - DATABASE_PATH=/app/data/webhooks.db
+      - PORT=5000
+    
+    ports:
+      # Port-Mapping für direkten Zugriff
+      - "5000:5000"
+    
+    volumes:
+      # Persistente Datenbank
+      - ./data:/app/data
+    
+    networks:
+      - webhook-net
+
+networks:
+  webhook-net:
+    driver: bridge

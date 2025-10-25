@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  webhook-manager:
+    build: .
+    container_name: webhook-manager
+    restart: unless-stopped
+    
+    environment:
+      # WICHTIG: Passwort ändern!
+      - WEBHOOK_PASSWORD=admin123
+      - SECRET_KEY=your-secret-key-change-me
+      - DATABASE_PATH=/app/data/webhooks.db
+      - PORT=5000
+    
+    volumes:
+      # Persistente Datenbank
+      - ./data:/app/data
+    
+    networks:
+      - traefik-net
+    
+    labels:
+      # Traefik aktivieren
+      - "traefik.enable=true"
+      
+      # Router für HTTPS
+      - "traefik.http.routers.webhook-manager.rule=Host(`webhooks.example.com`)"
+      - "traefik.http.routers.webhook-manager.entrypoints=websecure"
+      - "traefik.http.routers.webhook-manager.tls.certresolver=letsencrypt"
+      
+      # Service
+      - "traefik.http.services.webhook-manager.loadbalancer.server.port=5000"
+      
+      # Middleware für zusätzliche Sicherheit (optional)
+      - "traefik.http.routers.webhook-manager.middlewares=webhook-manager-headers"
+      - "traefik.http.middlewares.webhook-manager-headers.headers.framedeny=true"
+      - "traefik.http.middlewares.webhook-manager-headers.headers.browserxssfilter=true"
+      - "traefik.http.middlewares.webhook-manager-headers.headers.contentTypeNosniff=true"
+      
+      # Optional: Basic Auth zusätzlich zum Login
+      # - "traefik.http.routers.webhook-manager.middlewares=webhook-auth"
+      # - "traefik.http.middlewares.webhook-auth.basicauth.users=admin:$$apr1$$abc123$$"
+
+networks:
+  traefik-net:
+    external: true
