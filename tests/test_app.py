@@ -414,3 +414,16 @@ def test_connection_uses_the_checked_ip(auth, a, target, monkeypatch):
     calls.clear()
     status, _ = trigger(auth, webhook_id)
     assert status == 200 and len(target.requests) == 1
+
+
+def test_frontend_assets_are_served_and_csp_compatible(client):
+    page = client.get('/')
+    html = page.get_data(as_text=True)
+    assert page.status_code == 200
+    assert '<script src="/static/theme.js">' in html and 'id="themeToggle"' in html
+    assert 'name="color-scheme"' in html
+    assert '<script>' not in html and ' onclick=' not in html and ' style="' not in html  # CSP: script-src 'self'
+    for path in ('/static/theme.js', '/static/app.js', '/static/style.css', '/static/favicon.svg'):
+        assert client.get(path).status_code == 200, path
+    css = client.get('/static/style.css').get_data(as_text=True)
+    assert 'prefers-color-scheme: dark' in css and ':root[data-theme="dark"]' in css

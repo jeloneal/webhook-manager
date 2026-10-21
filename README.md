@@ -9,6 +9,7 @@ Sichere Web-Anwendung zum Verwalten und Auslösen von Webhooks. Ideal für Home-
 - ✅ **Nachvollziehbar**: Verlauf aller Auslösungen (Zeit, HTTP-Status, Dauer, Fehler)
 - ✅ **Übersichtlich**: Suche, Tags und Sortierung
 - ✅ **Portabel**: Export/Import als JSON
+- ✅ **Dark Mode**: automatisch nach Systemeinstellung, per Umschalter unten rechts auch fest Hell oder Dunkel
 - ✅ **Persistent**: SQLite-Datenbank mit automatischen Schema-Migrationen
 - ✅ **Docker-ready**: gunicorn, non-root, Healthcheck (`/healthz`), optional JSON-Logs
 - ✅ **Traefik-kompatibel**: Einfache Integration mit Reverse Proxy
@@ -152,6 +153,11 @@ htpasswd -nb admin dein-passwort
 - Bestätige die Ausführung
 - Erhalte Status-Feedback (HTTP-Status, Dauer, Anzahl Versuche; bei Fehlern die Ursache)
 - Der Antwortinhalt des Ziels wird bewusst nicht angezeigt (verhindert das Auslesen interner Dienste)
+
+### Farbschema (Dark Mode)
+- Standard ist **Auto**: die Oberfläche folgt der Systemeinstellung des Browsers (`prefers-color-scheme`)
+- Der Umschalter unten rechts wechselt zwischen **Auto → Hell → Dunkel**; die Wahl wird im Browser (`localStorage`) gespeichert, ohne Speicher gilt sie nur für die Sitzung
+- Das Schema wird vor dem ersten Rendern gesetzt, es gibt kein Aufblitzen des falschen Themes
 
 ### 3a. Verlauf, Suche, Export
 - **📜 Verlauf** (pro Webhook oder gesamt): Zeitpunkt, Ergebnis, Dauer, Versuche, Fehler. Es werden die letzten 2000 Einträge behalten.

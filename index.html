@@ -3,9 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light dark">
     <title>Webhook Manager</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/theme.js"></script>
 </head>
 <body>
     <div class="container">
@@ -55,6 +57,8 @@
             </div>
         </div>
     </div>
+
+    <button type="button" class="theme-toggle" id="themeToggle">🌓 Auto</button>
 
     <!-- Create/Edit Dialog -->
     <dialog id="webhookDialog" aria-labelledby="modalTitle">
