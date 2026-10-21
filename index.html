@@ -30,55 +30,137 @@
                 </div>
                 <div class="header-actions">
                     <button id="createButton">+ Neu anlegen</button>
+                    <button class="btn-secondary" id="historyButton" title="Verlauf aller Auslösungen">📜 Verlauf</button>
+                    <button class="btn-secondary" id="exportButton" title="Alle Webhooks als JSON sichern">⬇️ Export</button>
+                    <button class="btn-secondary" id="importButton" title="Webhooks aus JSON-Datei importieren">⬆️ Import</button>
                     <button class="btn-secondary" id="logoutButton">Logout</button>
                 </div>
             </div>
-            
-            <div id="mainAlert"></div>
-            
+            <input type="file" id="importFile" accept="application/json,.json" class="hidden">
+
+            <div class="toolbar">
+                <input type="search" id="searchInput" placeholder="Suchen (Name, URL, Beschreibung, Tag)" aria-label="Suchen">
+                <select id="sortSelect" aria-label="Sortierung">
+                    <option value="name">Name (A–Z)</option>
+                    <option value="recent">Zuletzt ausgelöst</option>
+                    <option value="created">Neueste zuerst</option>
+                </select>
+            </div>
+            <div id="tagFilter" class="tag-list"></div>
+
+            <div id="mainAlert" role="status" aria-live="polite"></div>
+
             <div id="webhookList">
                 <div class="loading">Lade Webhooks...</div>
             </div>
         </div>
     </div>
 
-    <!-- Create/Edit Modal -->
-    <div id="webhookModal" class="modal">
+    <!-- Create/Edit Dialog -->
+    <dialog id="webhookDialog" aria-labelledby="modalTitle">
         <div class="modal-content">
             <h2 id="modalTitle">Neuer Webhook</h2>
             <form id="webhookForm">
                 <input type="hidden" id="webhookId">
-                
+
                 <div class="form-group">
-                    <label>Name *</label>
-                    <input type="text" id="webhookName" required>
+                    <label for="webhookName">Name *</label>
+                    <input type="text" id="webhookName" required maxlength="200" autofocus>
                 </div>
-                
+
                 <div class="form-group">
-                    <label>URL *</label>
-                    <input type="url" id="webhookUrl" required placeholder="https://...">
+                    <label for="webhookUrl">URL *</label>
+                    <input type="url" id="webhookUrl" required placeholder="https://portainer.example.com/api/stacks/webhooks/…">
                 </div>
-                
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="webhookMethod">Methode</label>
+                        <select id="webhookMethod">
+                            <option value="POST">POST</option>
+                            <option value="GET">GET</option>
+                            <option value="PUT">PUT</option>
+                            <option value="PATCH">PATCH</option>
+                            <option value="DELETE">DELETE</option>
+                        </select>
+                    </div>
+                    <div class="form-group grow">
+                        <label for="webhookTags">Tags (kommagetrennt)</label>
+                        <input type="text" id="webhookTags" placeholder="prod, portainer" autocomplete="off">
+                    </div>
+                </div>
+
                 <div class="form-group">
-                    <label>Methode</label>
-                    <select id="webhookMethod">
-                        <option value="POST">POST</option>
-                        <option value="GET">GET</option>
-                    </select>
+                    <label for="webhookDescription">Beschreibung</label>
+                    <textarea id="webhookDescription" rows="2"></textarea>
                 </div>
-                
-                <div class="form-group">
-                    <label>Beschreibung</label>
-                    <textarea id="webhookDescription" rows="3"></textarea>
-                </div>
-                
+
+                <details id="advancedDetails">
+                    <summary>Erweitert (Header, Body, Timeout, Wiederholungen)</summary>
+
+                    <div class="form-group">
+                        <label for="webhookHeaders">Header (eine Zeile je Header: <code>Name: Wert</code>)</label>
+                        <textarea id="webhookHeaders" rows="3" spellcheck="false" autocomplete="off" placeholder="X-API-Key: …"></textarea>
+                        <p class="hint">Gespeicherte Werte werden aus Sicherheitsgründen als <code>********</code> angezeigt. Bleibt der Platzhalter stehen, behält der Header seinen Wert.</p>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="webhookBody">Body (nur POST, PUT, PATCH)</label>
+                        <textarea id="webhookBody" rows="4" spellcheck="false" placeholder="Leer = Standard-JSON mit Zeitstempel und Webhook-Name"></textarea>
+                        <p class="hint">Platzhalter: <code>{{timestamp}}</code> <code>{{webhook_id}}</code> <code>{{webhook_name}}</code></p>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group grow">
+                            <label for="webhookTimeout">Timeout (Sekunden)</label>
+                            <input type="number" id="webhookTimeout" min="1" max="60" value="30">
+                        </div>
+                        <div class="form-group grow">
+                            <label for="webhookRetries">Wiederholungen</label>
+                            <input type="number" id="webhookRetries" min="0" max="3" value="0">
+                        </div>
+                    </div>
+                    <p class="hint">Wiederholt wird bei Verbindungsfehlern, Timeouts und HTTP 5xx (Wartezeit 1 s, 2 s, 4 s).</p>
+
+                    <label class="checkbox">
+                        <input type="checkbox" id="webhookVerifyTls" checked>
+                        TLS-Zertifikat prüfen <span class="hint-inline">(nur für selbstsignierte Ziele deaktivieren)</span>
+                    </label>
+                </details>
+
+                <div id="formError" class="alert alert-error hidden" role="alert"></div>
+
                 <div class="form-actions">
                     <button type="submit">Speichern</button>
                     <button type="button" class="btn-secondary" id="cancelButton">Abbrechen</button>
                 </div>
             </form>
         </div>
-    </div>
+    </dialog>
+
+    <!-- History Dialog -->
+    <dialog id="historyDialog" aria-labelledby="historyTitle">
+        <div class="modal-content wide">
+            <h2 id="historyTitle">Verlauf</h2>
+            <div id="historyBody"></div>
+            <div class="form-actions">
+                <button type="button" class="btn-danger hidden" id="clearHistoryButton">Verlauf löschen</button>
+                <button type="button" class="btn-secondary" id="closeHistoryButton">Schließen</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Confirm Dialog -->
+    <dialog id="confirmDialog" aria-labelledby="confirmTitle">
+        <div class="modal-content narrow">
+            <h2 id="confirmTitle">Bestätigen</h2>
+            <p id="confirmMessage"></p>
+            <div class="form-actions">
+                <button type="button" id="confirmOk">OK</button>
+                <button type="button" class="btn-secondary" id="confirmCancel">Abbrechen</button>
+            </div>
+        </div>
+    </dialog>
 
     <script src="/static/app.js"></script>
 </body>

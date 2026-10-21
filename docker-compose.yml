@@ -8,10 +8,17 @@ services:
     
     environment:
       # WICHTIG: Passwort ändern!
-      - WEBHOOK_PASSWORD=${WEBHOOK_PASSWORD:?WEBHOOK_PASSWORD muss gesetzt sein}
+      # Eines von beiden setzen: Klartext-Passwort ODER Hash (python app.py --hash-password)
+      - WEBHOOK_PASSWORD=${WEBHOOK_PASSWORD:-}
+      - WEBHOOK_PASSWORD_HASH=${WEBHOOK_PASSWORD_HASH:-}
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY muss gesetzt sein}
       - DATABASE_PATH=/app/data/webhooks.db
       - PORT=5000
+      # Hosts, die auch auf private Adressen zeigen dürfen (z.B. Portainer im LAN), kommagetrennt
+      - ALLOWED_PRIVATE_HOSTS=${ALLOWED_PRIVATE_HOSTS:-}
+      # Anzahl vorgeschalteter Reverse-Proxys (Traefik = 1), damit das Login-Limit pro Client-IP gilt
+      - TRUSTED_PROXIES=1
+      - LOG_FORMAT=${LOG_FORMAT:-text}
     
     volumes:
       # Persistente Datenbank (Named Volume: Rechte für den non-root User passen automatisch)
