@@ -56,8 +56,10 @@ docker-compose -f docker-compose-standalone.yml up -d
 
 | Variable | Beschreibung | Standard |
 |----------|--------------|----------|
-| `WEBHOOK_PASSWORD` | Passwort für Login | `admin123` |
-| `SECRET_KEY` | Session-Secret | auto-generiert |
+| `WEBHOOK_PASSWORD` | Passwort für Login (**Pflicht**, die App startet sonst nicht) | – |
+| `SECRET_KEY` | Session-Secret, mind. 16 Zeichen (**Pflicht**) | – |
+| `COOKIE_SECURE` | Session-Cookie nur über HTTPS senden; für reinen HTTP-Betrieb `false` | `true` |
+| `ALLOW_PRIVATE_TARGETS` | Webhook-Ziele in privaten/internen Netzen erlauben (SSRF-Schutz aus) | `false` |
 | `DATABASE_PATH` | Pfad zur SQLite-DB | `/app/data/webhooks.db` |
 | `PORT` | Server-Port | `5000` |
 

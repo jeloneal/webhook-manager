@@ -453,7 +453,7 @@
                 const card = document.createElement('div');
                 card.className = 'webhook-card';
                 card.innerHTML = `
-                    <div class="webhook-method">${webhook.method}</div>
+                    <div class="webhook-method">${escapeHtml(webhook.method)}</div>
                     <div class="webhook-name">${escapeHtml(webhook.name)}</div>
                     <div class="webhook-url">${escapeHtml(webhook.url)}</div>
                     <div class="webhook-description">${escapeHtml(webhook.description || '')}</div>

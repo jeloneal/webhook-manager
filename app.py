@@ -4,30 +4,142 @@ Webhook Manager - Sichere Webanwendung zum Verwalten und Auslösen von Webhooks
 """
 
 import os
+import sys
+import hmac
+import time
+import socket
 import sqlite3
-import hashlib
-import secrets
+import ipaddress
+import threading
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from functools import wraps
 import requests
 from flask import Flask, request, jsonify, session, send_from_directory
-from flask_cors import CORS
 import logging
 
 # Logging konfigurieren
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
-
-# CORS für Frontend
-CORS(app, supports_credentials=True)
-
 # Konfiguration
-PASSWORD = os.environ.get('WEBHOOK_PASSWORD', 'admin123')
+PASSWORD = os.environ.get('WEBHOOK_PASSWORD', '')
+SECRET_KEY = os.environ.get('SECRET_KEY', '')
 DATABASE = os.environ.get('DATABASE_PATH', 'webhooks.db')
 PORT = int(os.environ.get('PORT', 5000))
+# Session-Cookie nur über HTTPS senden; für reinen HTTP-Betrieb (z.B. localhost) auf "false" setzen
+COOKIE_SECURE = os.environ.get('COOKIE_SECURE', 'true').lower() != 'false'
+# Standardmäßig sind Ziele in privaten/internen Netzen gesperrt (SSRF-Schutz)
+ALLOW_PRIVATE_TARGETS = os.environ.get('ALLOW_PRIVATE_TARGETS', 'false').lower() == 'true'
+
+ALLOWED_METHODS = ('GET', 'POST')
+MAX_NAME_LEN = 200
+MAX_URL_LEN = 2048
+MAX_DESCRIPTION_LEN = 2000
+
+# Bekannte Beispielwerte, mit denen die App nicht starten darf
+INSECURE_VALUES = {'', 'admin123', 'your-secret-key-change-me', 'changeme', 'password'}
+
+# Brute-Force-Schutz für den Login
+MAX_LOGIN_ATTEMPTS = 5
+LOGIN_WINDOW_SECONDS = 15 * 60
+_failed_logins = {}
+_failed_logins_lock = threading.Lock()
+
+
+def check_config():
+    """Bricht ab, wenn unsichere Standardwerte konfiguriert sind"""
+    if PASSWORD in INSECURE_VALUES:
+        raise RuntimeError('WEBHOOK_PASSWORD muss gesetzt und darf kein Beispielwert sein')
+    if SECRET_KEY in INSECURE_VALUES or len(SECRET_KEY) < 16:
+        raise RuntimeError('SECRET_KEY muss gesetzt sein (mindestens 16 Zeichen, kein Beispielwert)')
+
+
+app = Flask(__name__)
+app.secret_key = SECRET_KEY
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Strict',
+    SESSION_COOKIE_SECURE=COOKIE_SECURE,
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=24),
+)
+
+# Hinweis: Das Frontend wird vom selben Server ausgeliefert, daher ist kein CORS nötig.
+
+
+def is_login_blocked(ip):
+    now = time.time()
+    with _failed_logins_lock:
+        attempts = [t for t in _failed_logins.get(ip, []) if now - t < LOGIN_WINDOW_SECONDS]
+        if attempts:
+            _failed_logins[ip] = attempts
+        else:
+            _failed_logins.pop(ip, None)
+        return len(attempts) >= MAX_LOGIN_ATTEMPTS
+
+
+def register_failed_login(ip):
+    with _failed_logins_lock:
+        _failed_logins.setdefault(ip, []).append(time.time())
+
+
+def validate_target_url(url):
+    """Prüft eine Webhook-URL. Gibt eine Fehlermeldung zurück oder None, wenn gültig.
+
+    Löst den Hostnamen auf und lehnt (außer bei ALLOW_PRIVATE_TARGETS) alle
+    Adressen ab, die nicht öffentlich routbar sind (Loopback, private Netze,
+    Link-Local/Cloud-Metadaten usw.).
+    """
+    if len(url) > MAX_URL_LEN:
+        return 'URL ist zu lang'
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return 'Ungültige URL'
+    if parsed.scheme not in ('http', 'https') or not hostname:
+        return 'URL muss mit http:// oder https:// beginnen und einen Host enthalten'
+    if parsed.username or parsed.password:
+        return 'Zugangsdaten in der URL sind nicht erlaubt'
+    if ALLOW_PRIVATE_TARGETS:
+        return None
+    try:
+        infos = socket.getaddrinfo(hostname, port or (443 if parsed.scheme == 'https' else 80),
+                                   proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        return 'Host konnte nicht aufgelöst werden'
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split('%')[0])
+        if ip.version == 6 and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        if not ip.is_global:
+            return 'Ziel liegt in einem nicht öffentlichen Netzwerk'
+    return None
+
+
+def parse_webhook_payload(data):
+    """Validiert Eingabedaten. Gibt (werte, fehler) zurück."""
+    if not isinstance(data, dict):
+        return None, 'Ungültige Anfrage'
+    name, url = data.get('name'), data.get('url')
+    method = data.get('method', 'POST')
+    description = data.get('description') or ''
+    if not all(isinstance(v, str) for v in (name, url, method, description)):
+        return None, 'Ungültige Feldtypen'
+    name, url, description = name.strip(), url.strip(), description.strip()
+    method = method.strip().upper()
+    if not name or not url:
+        return None, 'Name und URL sind erforderlich'
+    if len(name) > MAX_NAME_LEN or len(description) > MAX_DESCRIPTION_LEN:
+        return None, 'Name oder Beschreibung ist zu lang'
+    if method not in ALLOWED_METHODS:
+        return None, 'Methode muss GET oder POST sein'
+    error = validate_target_url(url)
+    if error:
+        return None, error
+    return (name, url, method, description), None
+
 
 def init_db():
     """Initialisiert die SQLite-Datenbank"""
@@ -78,18 +190,24 @@ def index():
 @app.route('/api/login', methods=['POST'])
 def login():
     """Login-Endpoint"""
-    data = request.get_json()
-    if not data or 'password' not in data:
+    ip = request.remote_addr or 'unknown'
+    if is_login_blocked(ip):
+        logger.warning(f'Login gesperrt (zu viele Versuche): {ip}')
+        return jsonify({'error': 'Zu viele Fehlversuche. Bitte später erneut versuchen.'}), 429
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get('password'), str):
         return jsonify({'error': 'Passwort erforderlich'}), 400
-    
-    if data['password'] == PASSWORD:
+
+    if hmac.compare_digest(data['password'].encode('utf-8'), PASSWORD.encode('utf-8')):
+        session.clear()
         session['authenticated'] = True
         session.permanent = True
-        app.permanent_session_lifetime = timedelta(hours=24)
         logger.info('Erfolgreicher Login')
         return jsonify({'success': True})
     else:
-        logger.warning('Fehlgeschlagener Login-Versuch')
+        register_failed_login(ip)
+        logger.warning(f'Fehlgeschlagener Login-Versuch von {ip}')
         return jsonify({'error': 'Falsches Passwort'}), 401
 
 @app.route('/api/logout', methods=['POST'])
@@ -131,15 +249,9 @@ def get_webhooks():
 @require_auth
 def create_webhook():
     """Neuen Webhook erstellen"""
-    data = request.get_json()
-    
-    if not data or not data.get('name') or not data.get('url'):
-        return jsonify({'error': 'Name und URL sind erforderlich'}), 400
-    
-    # URL validieren
-    url = data['url'].strip()
-    if not url.startswith(('http://', 'https://')):
-        return jsonify({'error': 'URL muss mit http:// oder https:// beginnen'}), 400
+    values, error = parse_webhook_payload(request.get_json(silent=True))
+    if error:
+        return jsonify({'error': error}), 400
     
     try:
         conn = sqlite3.connect(DATABASE)
@@ -148,16 +260,11 @@ def create_webhook():
         cursor.execute('''
             INSERT INTO webhooks (name, url, method, description)
             VALUES (?, ?, ?, ?)
-        ''', (
-            data['name'].strip(),
-            url,
-            data.get('method', 'POST').upper(),
-            data.get('description', '').strip()
-        ))
+        ''', values)
         webhook_id = cursor.lastrowid
         conn.commit()
         conn.close()
-        logger.info(f'Webhook erstellt: {data["name"]} (ID: {webhook_id})')
+        logger.info(f'Webhook erstellt: {values[0]} (ID: {webhook_id})')
         return jsonify({'id': webhook_id, 'success': True})
     except Exception as e:
         logger.error(f'Fehler beim Erstellen des Webhooks: {e}')
@@ -167,15 +274,9 @@ def create_webhook():
 @require_auth
 def update_webhook(webhook_id):
     """Webhook aktualisieren"""
-    data = request.get_json()
-    
-    if not data or not data.get('name') or not data.get('url'):
-        return jsonify({'error': 'Name und URL sind erforderlich'}), 400
-    
-    # URL validieren
-    url = data['url'].strip()
-    if not url.startswith(('http://', 'https://')):
-        return jsonify({'error': 'URL muss mit http:// oder https:// beginnen'}), 400
+    values, error = parse_webhook_payload(request.get_json(silent=True))
+    if error:
+        return jsonify({'error': error}), 400
     
     try:
         conn = sqlite3.connect(DATABASE)
@@ -185,13 +286,7 @@ def update_webhook(webhook_id):
             UPDATE webhooks 
             SET name = ?, url = ?, method = ?, description = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-        ''', (
-            data['name'].strip(),
-            url,
-            data.get('method', 'POST').upper(),
-            data.get('description', '').strip(),
-            webhook_id
-        ))
+        ''', values + (webhook_id,))
         
         if cursor.rowcount == 0:
             conn.close()
@@ -231,6 +326,7 @@ def delete_webhook(webhook_id):
 @require_auth
 def trigger_webhook(webhook_id):
     """Webhook auslösen"""
+    name = f'ID {webhook_id}'
     try:
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
@@ -243,13 +339,19 @@ def trigger_webhook(webhook_id):
             return jsonify({'error': 'Webhook nicht gefunden'}), 404
         
         name, url, method = webhook
+
+        # Ziel bei jedem Auslösen erneut prüfen (DNS kann sich seit dem Speichern geändert haben)
+        error = validate_target_url(url)
+        if error:
+            logger.warning(f'Webhook-Ziel abgelehnt: {name}: {error}')
+            return jsonify({'error': error}), 400
         
         # Webhook-Request senden
         timeout = 30
         headers = {'User-Agent': 'Webhook-Manager/1.0'}
         
         if method.upper() == 'GET':
-            response = requests.get(url, headers=headers, timeout=timeout)
+            response = requests.get(url, headers=headers, timeout=timeout, allow_redirects=False)
         else:
             # Standard: POST mit JSON payload
             payload = {
@@ -259,15 +361,15 @@ def trigger_webhook(webhook_id):
                 'webhook_name': name
             }
             headers['Content-Type'] = 'application/json'
-            response = requests.post(url, json=payload, headers=headers, timeout=timeout)
+            response = requests.post(url, json=payload, headers=headers, timeout=timeout, allow_redirects=False)
         
         response.raise_for_status()
         
         logger.info(f'Webhook erfolgreich ausgelöst: {name} (Status: {response.status_code})')
+        # Antwortinhalt wird bewusst nicht zurückgegeben (verhindert das Auslesen interner Dienste)
         return jsonify({
             'success': True,
-            'status_code': response.status_code,
-            'response_text': response.text[:500]  # Erste 500 Zeichen der Antwort
+            'status_code': response.status_code
         })
         
     except requests.exceptions.Timeout:
@@ -276,7 +378,7 @@ def trigger_webhook(webhook_id):
     
     except requests.exceptions.RequestException as e:
         logger.error(f'Webhook-Fehler für {name}: {str(e)}')
-        return jsonify({'error': f'Fehler beim Auslösen: {str(e)}'}), 400
+        return jsonify({'error': 'Fehler beim Auslösen des Webhooks'}), 400
     
     except Exception as e:
         logger.error(f'Unerwarteter Fehler beim Auslösen des Webhooks: {e}')
@@ -298,10 +400,11 @@ if __name__ == '__main__':
     logger.info(f'Port: {PORT}')
     
     try:
+        check_config()
         init_db()
     except Exception as e:
         logger.error(f'Fataler Fehler beim Initialisieren: {e}')
-        exit(1)
+        sys.exit(1)
     
     # Server starten
     logger.info(f'Webhook Manager startet auf Port {PORT}')

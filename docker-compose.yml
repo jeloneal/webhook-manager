@@ -8,8 +8,8 @@ services:
     
     environment:
       # WICHTIG: Passwort ändern!
-      - WEBHOOK_PASSWORD=admin123
-      - SECRET_KEY=your-secret-key-change-me
+      - WEBHOOK_PASSWORD=${WEBHOOK_PASSWORD:?WEBHOOK_PASSWORD muss gesetzt sein}
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY muss gesetzt sein}
       - DATABASE_PATH=/app/data/webhooks.db
       - PORT=5000
     
