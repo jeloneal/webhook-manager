@@ -63,6 +63,8 @@ docker-compose -f docker-compose-standalone.yml up -d
 | `DATABASE_PATH` | Pfad zur SQLite-DB | `/app/data/webhooks.db` |
 | `PORT` | Server-Port | `5000` |
 
+> **Hinweis zu Dateirechten:** Der Container läuft als User `appuser` (UID 1000). Beim Bind-Mount `./data` muss das Verzeichnis für diese UID beschreibbar sein, z. B. `mkdir -p data && sudo chown 1000:1000 data`. Sonst startet die App mit „unable to open database file“.
+
 ### Traefik-Integration
 
 Die `docker-compose.yml` enthält vorkonfigurierte Traefik-Labels:

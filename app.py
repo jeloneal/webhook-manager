@@ -4,15 +4,15 @@ Webhook Manager - Sichere Webanwendung zum Verwalten und Auslösen von Webhooks
 """
 
 import os
-import sys
 import hmac
 import time
 import socket
 import sqlite3
 import ipaddress
 import threading
+from contextlib import contextmanager
 from urllib.parse import urlparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 import requests
 from flask import Flask, request, jsonify, session, send_from_directory
@@ -141,6 +141,17 @@ def parse_webhook_payload(data):
     return (name, url, method, description), None
 
 
+@contextmanager
+def db():
+    """SQLite-Verbindung, die immer geschlossen wird (Commit bei Erfolg, Rollback bei Fehler)"""
+    conn = sqlite3.connect(DATABASE)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
+
 def init_db():
     """Initialisiert die SQLite-Datenbank"""
     # Verzeichnis erstellen, falls nicht vorhanden
@@ -154,20 +165,18 @@ def init_db():
             raise
     
     try:
-        conn = sqlite3.connect(DATABASE)
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS webhooks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                url TEXT NOT NULL,
-                method TEXT DEFAULT 'POST',
-                description TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        conn.commit()
-        conn.close()
+        with db() as conn:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS webhooks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    method TEXT DEFAULT 'POST',
+                    description TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
         logger.info(f'Datenbank erfolgreich initialisiert: {DATABASE}')
     except Exception as e:
         logger.error(f'Fehler beim Initialisieren der Datenbank: {e}')
@@ -226,20 +235,18 @@ def status():
 def get_webhooks():
     """Alle Webhooks abrufen"""
     try:
-        conn = sqlite3.connect(DATABASE)
-        cursor = conn.cursor()
-        cursor.execute('SELECT id, name, url, method, description, created_at FROM webhooks ORDER BY name')
-        webhooks = []
-        for row in cursor.fetchall():
-            webhooks.append({
-                'id': row[0],
-                'name': row[1],
-                'url': row[2],
-                'method': row[3],
-                'description': row[4],
-                'created_at': row[5]
-            })
-        conn.close()
+        with db() as conn:
+            rows = conn.execute(
+                'SELECT id, name, url, method, description, created_at FROM webhooks ORDER BY name'
+            ).fetchall()
+        webhooks = [{
+            'id': row[0],
+            'name': row[1],
+            'url': row[2],
+            'method': row[3],
+            'description': row[4],
+            'created_at': row[5]
+        } for row in rows]
         return jsonify(webhooks)
     except Exception as e:
         logger.error(f'Fehler beim Laden der Webhooks: {e}')
@@ -254,16 +261,12 @@ def create_webhook():
         return jsonify({'error': error}), 400
     
     try:
-        conn = sqlite3.connect(DATABASE)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO webhooks (name, url, method, description)
-            VALUES (?, ?, ?, ?)
-        ''', values)
-        webhook_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
+        with db() as conn:
+            cursor = conn.execute('''
+                INSERT INTO webhooks (name, url, method, description)
+                VALUES (?, ?, ?, ?)
+            ''', values)
+            webhook_id = cursor.lastrowid
         logger.info(f'Webhook erstellt: {values[0]} (ID: {webhook_id})')
         return jsonify({'id': webhook_id, 'success': True})
     except Exception as e:
@@ -279,21 +282,17 @@ def update_webhook(webhook_id):
         return jsonify({'error': error}), 400
     
     try:
-        conn = sqlite3.connect(DATABASE)
-        cursor = conn.cursor()
+        with db() as conn:
+            cursor = conn.execute('''
+                UPDATE webhooks 
+                SET name = ?, url = ?, method = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', values + (webhook_id,))
+            found = cursor.rowcount > 0
         
-        cursor.execute('''
-            UPDATE webhooks 
-            SET name = ?, url = ?, method = ?, description = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        ''', values + (webhook_id,))
-        
-        if cursor.rowcount == 0:
-            conn.close()
+        if not found:
             return jsonify({'error': 'Webhook nicht gefunden'}), 404
         
-        conn.commit()
-        conn.close()
         logger.info(f'Webhook aktualisiert: ID {webhook_id}')
         return jsonify({'success': True})
     except Exception as e:
@@ -305,17 +304,12 @@ def update_webhook(webhook_id):
 def delete_webhook(webhook_id):
     """Webhook löschen"""
     try:
-        conn = sqlite3.connect(DATABASE)
-        cursor = conn.cursor()
+        with db() as conn:
+            found = conn.execute('DELETE FROM webhooks WHERE id = ?', (webhook_id,)).rowcount > 0
         
-        cursor.execute('DELETE FROM webhooks WHERE id = ?', (webhook_id,))
-        
-        if cursor.rowcount == 0:
-            conn.close()
+        if not found:
             return jsonify({'error': 'Webhook nicht gefunden'}), 404
         
-        conn.commit()
-        conn.close()
         logger.info(f'Webhook gelöscht: ID {webhook_id}')
         return jsonify({'success': True})
     except Exception as e:
@@ -328,12 +322,10 @@ def trigger_webhook(webhook_id):
     """Webhook auslösen"""
     name = f'ID {webhook_id}'
     try:
-        conn = sqlite3.connect(DATABASE)
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT name, url, method FROM webhooks WHERE id = ?', (webhook_id,))
-        webhook = cursor.fetchone()
-        conn.close()
+        with db() as conn:
+            webhook = conn.execute(
+                'SELECT name, url, method FROM webhooks WHERE id = ?', (webhook_id,)
+            ).fetchone()
         
         if not webhook:
             return jsonify({'error': 'Webhook nicht gefunden'}), 404
@@ -355,7 +347,7 @@ def trigger_webhook(webhook_id):
         else:
             # Standard: POST mit JSON payload
             payload = {
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'source': 'webhook-manager',
                 'webhook_id': webhook_id,
                 'webhook_name': name
@@ -384,6 +376,15 @@ def trigger_webhook(webhook_id):
         logger.error(f'Unerwarteter Fehler beim Auslösen des Webhooks: {e}')
         return jsonify({'error': 'Interner Fehler'}), 500
 
+@app.after_request
+def set_security_headers(response):
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('X-Frame-Options', 'DENY')
+    response.headers.setdefault('Referrer-Policy', 'no-referrer')
+    if request.path.startswith('/api/'):
+        response.headers.setdefault('Cache-Control', 'no-store')
+    return response
+
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'error': 'Endpoint nicht gefunden'}), 404
@@ -393,19 +394,15 @@ def internal_error(error):
     logger.error(f'Interner Server-Fehler: {str(error)}')
     return jsonify({'error': 'Interner Server-Fehler'}), 500
 
+# Konfiguration prüfen und Datenbank anlegen (auch beim Start über gunicorn)
+try:
+    check_config()
+    init_db()
+except Exception as e:
+    logger.error(f'Fataler Fehler beim Initialisieren: {e}')
+    raise  # gunicorn beendet sich dann ("Worker failed to boot"), statt endlos neu zu starten
+
 if __name__ == '__main__':
-    # Datenbank initialisieren
-    logger.info(f'Initialisiere Webhook Manager...')
-    logger.info(f'Datenbank-Pfad: {DATABASE}')
-    logger.info(f'Port: {PORT}')
-    
-    try:
-        check_config()
-        init_db()
-    except Exception as e:
-        logger.error(f'Fataler Fehler beim Initialisieren: {e}')
-        sys.exit(1)
-    
-    # Server starten
-    logger.info(f'Webhook Manager startet auf Port {PORT}')
-    app.run(host='0.0.0.0', port=PORT, debug=False)
+    # Nur für die lokale Entwicklung; im Container läuft gunicorn (siehe Dockerfile)
+    logger.info(f'Webhook Manager (Entwicklungsserver) startet auf Port {PORT}')
+    app.run(host='127.0.0.1', port=PORT, debug=False)
