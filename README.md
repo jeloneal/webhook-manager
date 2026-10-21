@@ -25,7 +25,7 @@ Sichere Web-Anwendung zum Verwalten und Auslösen von Webhooks. Ideal für Home-
 
 1. **Repository klonen:**
 ```bash
-git clone https://github.com/your-username/webhook-manager.git
+git clone https://github.com/jeloneal/webhook-manager.git
 cd webhook-manager
 ```
 
@@ -44,17 +44,19 @@ Ohne `SECRET_KEY` und Passwort (bzw. Hash) startet die App absichtlich nicht.
 
 **Mit Traefik:**
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 **Ohne Traefik (Standalone):**
 ```bash
-docker-compose -f docker-compose-standalone.yml up -d
+docker compose -f docker-compose-standalone.yml up -d
 ```
 
 4. **Anwendung öffnen:**
 - Mit Traefik: `https://webhooks.example.com`
 - Standalone: `http://localhost:5000`
+
+> **Standalone läuft ohne TLS.** Die Compose-Datei setzt deshalb `COOKIE_SECURE=false` und veröffentlicht Port 5000 auf allen Interfaces: das Passwort geht im Klartext über das Netz. Nur lokal oder in einem vertrauenswürdigen Netz nutzen, sonst Traefik (oder einen anderen TLS-Proxy) davorschalten. Wer nur lokal zugreift, kann in der Compose-Datei `"127.0.0.1:5000:5000"` als Port-Mapping eintragen.
 
 ## Konfiguration
 
@@ -80,16 +82,7 @@ docker compose run --rm webhook-manager python app.py --hash-password
 # WEBHOOK_PASSWORD_HASH='scrypt:32768:8:1$...'
 ```
 
-### Portainer (Stack-Updates auslösen)
-
-1. In Portainer beim Stack (oder Service) **Webhook** aktivieren und die URL kopieren, z. B.
-   `https://portainer.example.com/api/stacks/webhooks/<uuid>` (Services: `/api/webhooks/<uuid>`).
-2. Im Webhook Manager einen Webhook mit **Methode POST** und dieser URL anlegen. Portainer antwortet mit HTTP 204; ein Body ist nicht nötig.
-3. Liegt Portainer im privaten Netz oder im selben Docker-Netzwerk, den Hostnamen in `ALLOWED_PRIVATE_HOSTS` eintragen (z. B. `portainer`). Andere private Ziele bleiben gesperrt.
-4. Hat Portainer ein selbstsigniertes Zertifikat: unter **Erweitert** „TLS-Zertifikat prüfen“ abschalten (oder besser das Zertifikat trusten / ein gültiges verwenden).
-5. Optional: **Wiederholungen** auf 1–2 setzen, falls Portainer kurz nicht erreichbar ist (z. B. während eines Updates).
-
-Die Portainer-Webhook-URL enthält das Geheimnis (UUID) und wird in der Datenbank im Klartext gespeichert; sie taucht auch im Export auf.
+### Datenhaltung
 
 > **Datenhaltung:** Die Datenbank liegt im Docker-Named-Volume `webhook-data` (nicht mehr in `./data`). Der Container läuft als User `appuser` (UID 1000); das Named Volume erhält die passenden Rechte automatisch.
 >
@@ -101,6 +94,17 @@ Die Portainer-Webhook-URL enthält das Geheimnis (UUID) und wird in der Datenban
 > docker compose up -d
 > ```
 > (Der Volume-Name enthält den Projektnamen, prüfen mit `docker volume ls`.) Wer lieber beim Bind-Mount bleibt, muss das Host-Verzeichnis für UID 1000 beschreibbar machen: `sudo chown 1000:1000 data`.
+
+### Portainer (Stack-Updates auslösen)
+
+1. In Portainer beim Stack (oder Service) **Webhook** aktivieren und die URL kopieren, z. B.
+   `https://portainer.example.com/api/stacks/webhooks/<uuid>` (Services: `/api/webhooks/<uuid>`).
+2. Im Webhook Manager einen Webhook mit **Methode POST** und dieser URL anlegen. Portainer antwortet mit HTTP 204; ein Body ist nicht nötig.
+3. Liegt Portainer im privaten Netz oder im selben Docker-Netzwerk, den Hostnamen in `ALLOWED_PRIVATE_HOSTS` eintragen (z. B. `portainer`). Andere private Ziele bleiben gesperrt.
+4. Hat Portainer ein selbstsigniertes Zertifikat: unter **Erweitert** „TLS-Zertifikat prüfen“ abschalten (oder besser das Zertifikat trusten / ein gültiges verwenden).
+5. Optional: **Wiederholungen** auf 1–2 setzen, falls Portainer kurz nicht erreichbar ist (z. B. während eines Updates).
+
+Die Portainer-Webhook-URL enthält das Geheimnis (UUID) und wird in der Datenbank im Klartext gespeichert; sie taucht auch im Export auf.
 
 ### Traefik-Integration
 
@@ -154,20 +158,19 @@ htpasswd -nb admin dein-passwort
 - Erhalte Status-Feedback (HTTP-Status, Dauer, Anzahl Versuche; bei Fehlern die Ursache)
 - Der Antwortinhalt des Ziels wird bewusst nicht angezeigt (verhindert das Auslesen interner Dienste)
 
-### Farbschema (Dark Mode)
-- Standard ist **Auto**: die Oberfläche folgt der Systemeinstellung des Browsers (`prefers-color-scheme`)
-- Der Umschalter unten rechts wechselt zwischen **Auto → Hell → Dunkel**; die Wahl wird im Browser (`localStorage`) gespeichert, ohne Speicher gilt sie nur für die Sitzung
-- Das Schema wird vor dem ersten Rendern gesetzt, es gibt kein Aufblitzen des falschen Themes
+### 4. Webhook bearbeiten/löschen
+- **✏️** öffnet den Webhook zum Bearbeiten, **🗑️** löscht ihn (nach Rückfrage, der Verlauf wird mitgelöscht)
+- Änderungen mit „Speichern“ übernehmen
 
-### 3a. Verlauf, Suche, Export
+### 5. Verlauf, Suche, Export
 - **📜 Verlauf** (pro Webhook oder gesamt): Zeitpunkt, Ergebnis, Dauer, Versuche, Fehler. Es werden die letzten 2000 Einträge behalten.
 - Suche über Name, URL, Beschreibung und Tags; Filter per Tag; Sortierung nach Name, zuletzt ausgelöst oder neuester
 - **Export/Import** als JSON. Der Export enthält Header-Werte im Klartext, die Datei also sicher aufbewahren. Beim Import werden Duplikate (Name, URL, Methode) übersprungen
 
-### 4. Webhook bearbeiten/löschen
-- Klicke auf "Bearbeiten" oder "Löschen"
-- Nehme Änderungen vor
-- Speichern
+### 6. Farbschema (Dark Mode)
+- Standard ist **Auto**: die Oberfläche folgt der Systemeinstellung des Browsers (`prefers-color-scheme`)
+- Der Umschalter unten rechts wechselt zwischen **Auto → Hell → Dunkel**; die Wahl wird im Browser (`localStorage`) gespeichert, ohne Speicher gilt sie nur für die Sitzung
+- Das Schema wird vor dem ersten Rendern gesetzt, es gibt kein Aufblitzen des falschen Themes
 
 ## API-Endpunkte
 
@@ -215,11 +218,11 @@ Nur `name` und `url` sind Pflicht. Ohne `body` wird bei POST/PUT/PATCH ein JSON 
 
 ### Verlauf, Export, Import
 
-**GET** `/api/history?limit=50` · **GET** `/api/webhooks/{id}/history` · **DELETE** `/api/history`
+**GET** `/api/history?limit=50` (max. 500) · **GET** `/api/webhooks/{id}/history` · **DELETE** `/api/history`
 
 **GET** `/api/export` - Alle Webhooks als JSON-Datei
 
-**POST** `/api/import` - `{"webhooks": [...]}` im Format des Exports; Antwort: `imported`, `skipped`, `errors`
+**POST** `/api/import` - `{"webhooks": [...]}` im Format des Exports (max. 500 Einträge, max. 2 MB); jeder Eintrag wird wie beim Anlegen validiert. Antwort: `imported`, `skipped`, `errors`
 
 ### Betrieb
 
@@ -241,11 +244,12 @@ Nur `name` und `url` sind Pflicht. Ohne `body` wird bei POST/PUT/PATCH ein JSON 
    - Container nur im benötigten Netzwerk
    - Firewall-Regeln konfigurieren
 
-4. **Regelmäßige Updates**
+4. **Regelmäßige Updates** (das Image wird lokal gebaut)
    ```bash
-   docker-compose pull
-   docker-compose up -d
+   git pull
+   docker compose up -d --build
    ```
+   Schema-Änderungen werden beim Start automatisch migriert; vorher ein Backup anlegen.
 
 5. **Backup der Datenbank**
    ```bash
@@ -256,7 +260,7 @@ Nur `name` und `url` sind Pflicht. Ohne `body` wird bei POST/PUT/PATCH ein JSON 
    - SSRF-Schutz: Ziele werden beim Verbindungsaufbau aufgelöst und geprüft (kein DNS-Rebinding); Loopback, private Netze und Cloud-Metadaten sind gesperrt, Ausnahmen nur über `ALLOWED_PRIVATE_HOSTS`; Redirects werden nicht verfolgt
    - Login-Rate-Limit (5 Fehlversuche je IP in 15 Minuten); hinter Traefik `TRUSTED_PROXIES=1` setzen
    - Session-Cookie `HttpOnly`, `SameSite=Strict`, `Secure`; kein CORS; Content-Security-Policy
-   - Header-Werte (z. B. Tokens) werden von der API nie zurückgegeben. In der Datenbank liegen sie, wie die URLs, im Klartext: Volume und Backups entsprechend schützen
+   - Header-Werte (z. B. Tokens) werden von der API nur maskiert ausgeliefert; einzige Ausnahme ist der Export (Backup). In der Datenbank liegen sie, wie die URLs, im Klartext: Volume, Backups und Exportdateien entsprechend schützen
    - Optional zusätzlich: Fail2Ban auf Basis der Logs (`LOG_FORMAT=json`)
 
 ## Entwicklung
@@ -316,10 +320,10 @@ docker push your-registry/webhook-manager:latest
 
 ```bash
 # Logs prüfen
-docker-compose logs -f webhook-manager
+docker compose logs -f webhook-manager
 
 # Container neu starten
-docker-compose restart webhook-manager
+docker compose restart webhook-manager
 ```
 
 ### Datenbank-Fehler

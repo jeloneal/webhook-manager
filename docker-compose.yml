@@ -16,6 +16,8 @@ services:
       - PORT=5000
       # Hosts, die auch auf private Adressen zeigen dürfen (z.B. Portainer im LAN), kommagetrennt
       - ALLOWED_PRIVATE_HOSTS=${ALLOWED_PRIVATE_HOSTS:-}
+      # Nur im Notfall: alle privaten Ziele erlauben (besser ALLOWED_PRIVATE_HOSTS)
+      - ALLOW_PRIVATE_TARGETS=${ALLOW_PRIVATE_TARGETS:-false}
       # Anzahl vorgeschalteter Reverse-Proxys (Traefik = 1), damit das Login-Limit pro Client-IP gilt
       - TRUSTED_PROXIES=1
       - LOG_FORMAT=${LOG_FORMAT:-text}
