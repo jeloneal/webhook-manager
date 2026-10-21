@@ -22,8 +22,8 @@ services:
       - "5000:5000"
     
     volumes:
-      # Persistente Datenbank
-      - ./data:/app/data
+      # Persistente Datenbank (Named Volume: Rechte für den non-root User passen automatisch)
+      - webhook-data:/app/data
     
     networks:
       - webhook-net
@@ -31,3 +31,6 @@ services:
 networks:
   webhook-net:
     driver: bridge
+
+volumes:
+  webhook-data:

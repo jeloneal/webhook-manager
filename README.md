@@ -63,7 +63,16 @@ docker-compose -f docker-compose-standalone.yml up -d
 | `DATABASE_PATH` | Pfad zur SQLite-DB | `/app/data/webhooks.db` |
 | `PORT` | Server-Port | `5000` |
 
-> **Hinweis zu Dateirechten:** Der Container läuft als User `appuser` (UID 1000). Beim Bind-Mount `./data` muss das Verzeichnis für diese UID beschreibbar sein, z. B. `mkdir -p data && sudo chown 1000:1000 data`. Sonst startet die App mit „unable to open database file“.
+> **Datenhaltung:** Die Datenbank liegt im Docker-Named-Volume `webhook-data` (nicht mehr in `./data`). Der Container läuft als User `appuser` (UID 1000); das Named Volume erhält die passenden Rechte automatisch.
+>
+> **Migration von einer älteren Version mit `./data`:**
+> ```bash
+> docker compose up -d --no-start            # legt das Volume an
+> docker run --rm -v "$(pwd)/data:/from:ro" -v webhook-manager_webhook-data:/to alpine \
+>   sh -c 'cp /from/webhooks.db /to/ && chown 1000:1000 /to/webhooks.db'
+> docker compose up -d
+> ```
+> (Der Volume-Name enthält den Projektnamen, prüfen mit `docker volume ls`.) Wer lieber beim Bind-Mount bleibt, muss das Host-Verzeichnis für UID 1000 beschreibbar machen: `sudo chown 1000:1000 data`.
 
 ### Traefik-Integration
 
@@ -180,7 +189,7 @@ Die Anwendung bietet eine RESTful API:
 
 5. **Backup der Datenbank**
    ```bash
-   cp data/webhooks.db data/webhooks.db.backup
+   docker compose cp webhook-manager:/app/data/webhooks.db ./webhooks.db.backup
    ```
 
 6. **Optional: Fail2Ban**
@@ -244,8 +253,9 @@ docker-compose restart webhook-manager
 
 ```bash
 # Datenbank zurücksetzen (ACHTUNG: Löscht alle Daten!)
-rm data/webhooks.db
-docker-compose restart webhook-manager
+docker compose down
+docker volume rm webhook-manager_webhook-data
+docker compose up -d
 ```
 
 ### Traefik findet Container nicht
@@ -275,7 +285,7 @@ docker inspect webhook-manager | grep -A 20 Labels
 BACKUP_DIR="./backups"
 mkdir -p $BACKUP_DIR
 DATE=$(date +%Y%m%d_%H%M%S)
-cp data/webhooks.db "$BACKUP_DIR/webhooks_$DATE.db"
+docker compose cp webhook-manager:/app/data/webhooks.db "$BACKUP_DIR/webhooks_$DATE.db"
 # Alte Backups löschen (älter als 30 Tage)
 find $BACKUP_DIR -name "webhooks_*.db" -mtime +30 -delete
 ```

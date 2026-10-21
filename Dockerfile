@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Anwendung kopieren
 COPY app.py .
 COPY index.html .
+COPY static ./static
 
 # Non-root User und beschreibbares Datenverzeichnis
 RUN useradd -m -u 1000 appuser \

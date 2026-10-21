@@ -14,8 +14,8 @@ services:
       - PORT=5000
     
     volumes:
-      # Persistente Datenbank
-      - ./data:/app/data
+      # Persistente Datenbank (Named Volume: Rechte für den non-root User passen automatisch)
+      - webhook-data:/app/data
     
     networks:
       - traefik-net
@@ -45,3 +45,6 @@ services:
 networks:
   traefik-net:
     external: true
+
+volumes:
+  webhook-data:

@@ -15,6 +15,10 @@ from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.connection import HTTPConnection, HTTPSConnection
+from urllib3.exceptions import NameResolutionError, NewConnectionError
+from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 from flask import Flask, request, jsonify, session, send_from_directory
 import logging
 
@@ -45,6 +49,12 @@ MAX_LOGIN_ATTEMPTS = 5
 LOGIN_WINDOW_SECONDS = 15 * 60
 _failed_logins = {}
 _failed_logins_lock = threading.Lock()
+
+
+CONTENT_SECURITY_POLICY = (
+    "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+    "img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+)
 
 
 def check_config():
@@ -83,12 +93,90 @@ def register_failed_login(ip):
         _failed_logins.setdefault(ip, []).append(time.time())
 
 
+def is_public_ip(address):
+    ip = ipaddress.ip_address(address.split('%')[0])
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return ip.is_global
+
+
+def resolve_public_ip(host, port):
+    """Löst einen Host auf und gibt eine öffentliche IP zurück (sonst ValueError).
+
+    Wird direkt beim Verbindungsaufbau verwendet: die geprüfte IP ist exakt die,
+    mit der verbunden wird. Das schließt DNS-Rebinding zwischen Prüfung und
+    Request aus.
+    """
+    infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    addresses = [info[4][0] for info in infos]
+    if not addresses:
+        raise ValueError('Host konnte nicht aufgelöst werden')
+    if not all(is_public_ip(a) for a in addresses):
+        raise ValueError('Ziel liegt in einem nicht öffentlichen Netzwerk')
+    return addresses[0]
+
+
+class _PinnedConnectionMixin:
+    def _new_conn(self):
+        if ALLOW_PRIVATE_TARGETS:
+            return super()._new_conn()
+        # In urllib3 ist host an _dns_host gekoppelt (Zertifikatsprüfung/SNI).
+        # Die geprüfte IP gilt deshalb nur für den Socket-Connect, danach wird
+        # der Hostname wiederhergestellt.
+        hostname = self._dns_host
+        try:
+            pinned_ip = resolve_public_ip(hostname, self.port)
+        except socket.gaierror as e:
+            raise NameResolutionError(hostname, self, e) from e
+        except ValueError as e:
+            raise NewConnectionError(self, str(e)) from e
+        self._dns_host = pinned_ip
+        try:
+            return super()._new_conn()
+        finally:
+            self._dns_host = hostname
+
+
+class _PinnedHTTPConnection(_PinnedConnectionMixin, HTTPConnection):
+    pass
+
+
+class _PinnedHTTPSConnection(_PinnedConnectionMixin, HTTPSConnection):
+    pass
+
+
+class _PinnedHTTPPool(HTTPConnectionPool):
+    ConnectionCls = _PinnedHTTPConnection
+
+
+class _PinnedHTTPSPool(HTTPSConnectionPool):
+    ConnectionCls = _PinnedHTTPSConnection
+
+
+class _PinnedAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        super().init_poolmanager(*args, **kwargs)
+        self.poolmanager.pool_classes_by_scheme = {
+            'http': _PinnedHTTPPool,
+            'https': _PinnedHTTPSPool,
+        }
+
+
+def safe_session():
+    """requests-Session, die nur zu geprüften öffentlichen IPs verbindet"""
+    session_ = requests.Session()
+    session_.trust_env = False  # keine Proxy-Umgebungsvariablen (würden die Prüfung umgehen)
+    adapter = _PinnedAdapter()
+    session_.mount('http://', adapter)
+    session_.mount('https://', adapter)
+    return session_
+
+
 def validate_target_url(url):
     """Prüft eine Webhook-URL. Gibt eine Fehlermeldung zurück oder None, wenn gültig.
 
-    Löst den Hostnamen auf und lehnt (außer bei ALLOW_PRIVATE_TARGETS) alle
-    Adressen ab, die nicht öffentlich routbar sind (Loopback, private Netze,
-    Link-Local/Cloud-Metadaten usw.).
+    Frühe Prüfung für sofortiges Feedback. Maßgeblich ist die Prüfung beim
+    Verbindungsaufbau (siehe safe_session), die auch DNS-Rebinding abdeckt.
     """
     if len(url) > MAX_URL_LEN:
         return 'URL ist zu lang'
@@ -105,16 +193,11 @@ def validate_target_url(url):
     if ALLOW_PRIVATE_TARGETS:
         return None
     try:
-        infos = socket.getaddrinfo(hostname, port or (443 if parsed.scheme == 'https' else 80),
-                                   proto=socket.IPPROTO_TCP)
+        resolve_public_ip(hostname, port or (443 if parsed.scheme == 'https' else 80))
     except socket.gaierror:
         return 'Host konnte nicht aufgelöst werden'
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0].split('%')[0])
-        if ip.version == 6 and ip.ipv4_mapped:
-            ip = ip.ipv4_mapped
-        if not ip.is_global:
-            return 'Ziel liegt in einem nicht öffentlichen Netzwerk'
+    except ValueError as e:
+        return str(e)
     return None
 
 
@@ -342,8 +425,9 @@ def trigger_webhook(webhook_id):
         timeout = 30
         headers = {'User-Agent': 'Webhook-Manager/1.0'}
         
+        http = safe_session()
         if method.upper() == 'GET':
-            response = requests.get(url, headers=headers, timeout=timeout, allow_redirects=False)
+            response = http.get(url, headers=headers, timeout=timeout, allow_redirects=False)
         else:
             # Standard: POST mit JSON payload
             payload = {
@@ -353,7 +437,7 @@ def trigger_webhook(webhook_id):
                 'webhook_name': name
             }
             headers['Content-Type'] = 'application/json'
-            response = requests.post(url, json=payload, headers=headers, timeout=timeout, allow_redirects=False)
+            response = http.post(url, json=payload, headers=headers, timeout=timeout, allow_redirects=False)
         
         response.raise_for_status()
         
@@ -381,6 +465,7 @@ def set_security_headers(response):
     response.headers.setdefault('X-Content-Type-Options', 'nosniff')
     response.headers.setdefault('X-Frame-Options', 'DENY')
     response.headers.setdefault('Referrer-Policy', 'no-referrer')
+    response.headers.setdefault('Content-Security-Policy', CONTENT_SECURITY_POLICY)
     if request.path.startswith('/api/'):
         response.headers.setdefault('Cache-Control', 'no-store')
     return response
